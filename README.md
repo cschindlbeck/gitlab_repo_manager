@@ -1,93 +1,247 @@
-# gitlab_repo_manager
+# Gitlab Repository Manager
 
+This repo shows an example on how to automate GitLab settings with Terraform.
 
+Fork this repo and use it as a template to start adapting it for your organization!
 
-## Getting started
+You can extend this for various other automation tasks.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Reasoning and Advantages of this Approach
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Are you responsible in your organization for a complex project with many repositories? Are you tired of going through all repositories manually and do such tasks as adding/removing users and setting merge permissions?
 
-## Add your files
+By following this guide, you can:
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+- Save Time: Automate repetitive tasks and focus on what truly matters.
+- Reduce Errors: Minimize human errors with consistent automation scripts.
+- Improve Productivity: Streamline your workflow and enhance team collaboration.
 
+This guide exemplifies how to leverage Terraform to automate branch protection permissions in GitLab.
+
+## Fictitious example
+
+In this example, branch protection rules for two fictitious teams (backend and frontend) with different repositories respectively, are automated.
+
+The repositories hosted on GitLab and each teams requires specific branch protection rules. The frontend team handles solely frontend repos, and the backend team handles the backend repos.
+
+To get a rough idea, this table summarizes what we want to achieve automatically
+
+![table](table.png)
+
+## Step-by-Step Explanation
+
+### Initial Setup
+
+Security first, so export your Gitlab PAT (private access token) via the command line, by setting an environment variable with
+
+```bash
+export $TF_VAR_gitlab_token=YOURTOKEN
 ```
-cd existing_repo
-git remote add origin https://gitlab.iav.com/Ernteroboter/tooling/gitlab_repo_manager.git
-git branch -M master
-git push -uf origin master
+
+in order to avoid exposing sensitive information in your git repo (put it in your .bashrc/.zshrc if you do not want to do this each time you open a terminal). This environment variable is then accessible in HCL (Terraform's own programming language) via `var.gitlab_token` (make sure you give at least repo_read, repo_write permissions for the PAT).
+
+Now we can add the [Gitlab provider](https://registry.terraform.io/providers/gitlabhq/gitlab/latest/docs) to enable Terraform to communicate with Gitlab:
+
+```hcl
+terraform {
+  required_providers {
+    gitlab = {
+      source  = "gitlabhq/gitlab"
+      version = "17.1.0"
+    }
+  }
+}
+
+variable "gitlab_token" {}
+provider "gitlab" {
+  base_url = "https://gitlab.iav.com/api/v4"
+  token    = var.gitlab_token
+}
 ```
 
-## Integrate with your tools
+Initialize the terraform directory
 
-- [ ] [Set up project integrations](https://gitlab.iav.com/Ernteroboter/tooling/gitlab_repo_manager/-/settings/integrations)
 
-## Collaborate with your team
+```bash
+terraform init
+```
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+which will download the necessary code for communication with the Gitlab API in a .terraform directory.
 
-## Test and Deploy
+### Get a list of frontend and backend repositories
 
-Use the built-in continuous integration in GitLab.
+Then, we must obtain a list of all frontend and backend repositories. For simplicity, we assume that these repositories (in Gitlab called "projects") are found in the same directory (in Gitlab called "group").
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+Enter the path to the group in the next block and 
 
-***
+```hcl
+# Specify the path to your group
+data "gitlab_group" "group" {
+  full_path = "<YOUR_PATH_TO_YOUR_GROUP>"
+}
 
-# Editing this README
+# Filter repositories for the frontend
+data "gitlab_projects" "frontend_projects" {
+  group_id          = data.gitlab_group.group.id
+  order_by          = "name"
+  include_subgroups = true
+  search            = "frontend" # filter out repos containing the word 'frontend'
+}
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+# Filter repositories for the backend
+data "gitlab_projects" "backend_projects" {
+  group_id          = data.gitlab_group.group.id
+  order_by          = "name"
+  include_subgroups = true
+  search            = "backend" # filter out repos containing the word 'backend'
+}
+```
 
-## Suggestions for a good README
+These so-called data resources will obtain the current information of the repositories and store them in the terraform.tfstate file. By specifing a search field, we can obtain only the repos that contain a certain word, here front- and backend. This makes them accessible via `data.gitlab_projects.frontend_projects.projects` and `data.gitlab_projects.backend_projects.projects` so that we can change the settings there accordingly. Note that this will only work if the repos adhere to a certain naming scheme, here they must include the words frontend or backend.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+### Specify who is admin or dev
 
-## Name
-Choose a self-explaining name for your project.
+Now, let's define who is a backend and a frontend admin or developer, starting with the frontend admins.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+You can get the IDs by searching for the person in Gitlab and right-clicking the three dots on the right to copy their ID.
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+Here, we set a list of frontend admins
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```hcl
+variable "frontend_admins" {
+  description = "List of frontend admin ids"
+  type        = list(number)
+  default     = [71, 63]
+}
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+And let's repeat the same for the remaining ones with
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```hcl
+variable "frontend_devs" {
+  description = "List of frontend dev ids"
+  type        = list(number)
+  default     = [82, 102, 182]
+}
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+variable "backend_admins" {
+  description = "List of backend admin ids"
+  type        = list(number)
+  default     = [713]
+}
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+variable "backend_devs" {
+  description = "List of backend dev ids"
+  type        = list(number)
+  default     = [767, 90, 152]
+}
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+### Protect branches
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Finally we can set our branch protection rules for all the repositories in an automated way.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+Let's start with protecting the master branch of the frontend repositories, by including this block.
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```hcl
+resource "gitlab_branch_protection" "frontend_master_protection" {
+  for_each                     = { for project in data.gitlab_projects.frontend_projects.projects : project.id => project }
+  project                      = each.value.id
+  allow_force_push             = true
+  code_owner_approval_required = true
+  branch                       = "master"
+  push_access_level            = "no one" # do not push to master directly
+  merge_access_level           = "no one" # we will specify who can push below
+  dynamic "allowed_to_merge" {
+    for_each = var.frontend_admins
+    content {
+      user_id = allowed_to_merge.value
+    }
+  }
+}
+```
 
-## License
-For open source projects, say how it is licensed.
+Let's explore this large block in more detail:
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- `for_each`: We loop over all our frontend repositories that we gathered in the data block previously
+- `allow_force_push`/`code_owner_approval_required`: Allow force push by the admins/Require code owner approval
+- `push_access_level`/`merge_access_level`: Set level of push/merge access (no one, developer, maintainer, owner), we allow no role here, but individual accounts
+- `allowed_to_merge`: We loop over all frontend admins for merge rights
+
+We set levels to `no one` in this example because backend and frontend devs might both be classified as developer but we want only to include the ones responsible for their part.
+
+Now, we can do the same for the dev branch
+
+```hcl
+resource "gitlab_branch_protection" "frontend_dev_protection" {
+  for_each                     = { for project in data.gitlab_projects.frontend_projects.projects : project.id => project }
+  project                      = each.value.id
+  allow_force_push             = false
+  code_owner_approval_required = true
+  branch                       = "dev"
+  push_access_level            = "developer" # here, let's allow every developer to push, regardless of front- or backend
+  merge_access_level           = "no one"    # we will specify who can push below
+  dynamic "allowed_to_merge" {
+    for_each = distinct(concat(var.frontend_admins, var.frontend_devs)) # union over devs and admins
+    content {
+      user_id = allowed_to_merge.value
+    }
+  }
+  dynamic "allowed_to_push" {
+    for_each = distinct(concat(var.frontend_admins, var.frontend_devs)) # union over devs and admins
+    content {
+      user_id = allowed_to_push.value
+    }
+  }
+}
+```
+
+We follow the same approach as for the master branch with a few differences for the dev branch:
+
+- `allow_force_push`/`code_owner_approval_required`: We disallow force push for anyone here
+- `allowed_to_push`/`allowed_to_merge`: We loop over the union of frontend admins and devs to let them have push/merge rights (admins should be able to merge/push too, right?)
+
+Now that we have done this for the frontend repos, we can do this in an analagous fashion for the backend repos by changing only `frontend_projects` to `backend_projects` and `frontend_admins` and `frontend_devs` to `backend_admins` and `backend_devs`, such as
+
+```hcl
+  ...
+  for_each                     = { for project in data.gitlab_projects.backend_projects.projects : project.id => project }
+  ...
+    for_each = distinct(concat(var.backend_admins, var.backend_devs)) # union over devs and admins
+```
+
+You can take a look at the entire code [here](https://github.com/cschindlbeck/gitlab_repo_manager), or adapt the settings to your preferences/organizational process.
+
+Now we have every set up to make the changes readily availabe in GitLab.
+
+### Deployment
+
+Finally, we can apply our changes via
+
+```bash
+terraform apply
+```
+
+Carefully look through the upcoming changes and confirm with `yes` if you are sure everything is set correctly.
+
+Attention: if you have already set up your repos (and settings) in Gitlab, this will fail as Terraform will complain that the resources already exist. In this case, you will need to import the current state to your terraform.tfstate first, so that terraform is able to manage this.
+
+You can do this for each project you want to import via
+
+```bash
+terraform import gitlab_project.gitlab_repo_manager <project_id>
+```
+
+or, alternatively, for more complex projects, check out [terraformer](https://github.com/GoogleCloudPlatform/terraformer), a CLI tool to import/update your tfstate from existing infrastructure.
+
+
+## Summary
+
+This guide walked you through an example on how to set up branch protection in multiple Gitlab repos automatically via Terraform. You can take this example as a starting point on how to automate much more settings in Gitlab repos, such as setting the preferred merge method, tag protection, branch rules and much more! 
+
+If you host your repos on GitHub you can take this example as a template and take the structure and adapt it step-by-step for the [GitHub provider](https://registry.terraform.io/providers/integrations/github/latest/docs).
+
+The days are numbered where you had to do this manually for (countless) repos in a complex project for every subteam. Embrace the mighty tooling capabilities of Terraform!
+
+
+Bonus: Check out how to set the preferred merge method (the only correct answer is fast-forward only, right?) in my [github repo](https://github.com/cschindlbeck/gitlab_repo_manager).
